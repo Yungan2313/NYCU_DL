@@ -1,0 +1,8 @@
+dataset/
+log/
+results/
+*.pdf
+.vscode/
+src/__pycache__/
+src/models/__pycache__/
+saved_models/
