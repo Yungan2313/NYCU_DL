@@ -33,7 +33,7 @@ class DQN(nn.Module):
         - Feel free to change the architecture (e.g. number of hidden layers and the width of each hidden layer) as you like
         - Feel free to add any member variables/functions whenever needed
     """
-    def __init__(self, num_actions, input_dim):
+    def __init__(self, num_actions, input_dim, task = 2):
         super(DQN, self).__init__()
         # An example: 
         #self.network = nn.Sequential(
@@ -44,17 +44,33 @@ class DQN(nn.Module):
         #    nn.Linear(64, num_actions)
         #)       
         ########## YOUR CODE HERE (5~10 lines) ##########
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, num_actions)
-        )
-        
+        self.task = task
+        if task == 2:
+            self.network = nn.Sequential(
+                nn.Conv2d(in_channels=input_dim, out_channels=32, kernel_size=8, stride=4),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2),
+                nn.ReLU(),
+                nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1),
+                nn.ReLU(),
+                nn.Flatten(),
+                nn.Linear(64 * 7 * 7, 512),
+                nn.ReLU(),
+                nn.Linear(512, num_actions)
+            )
+        else:
+            self.network = nn.Sequential(
+                nn.Linear(input_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 64),
+                nn.ReLU(),
+                nn.Linear(64, num_actions)
+            )
         ########## END OF YOUR CODE ##########
 
     def forward(self, x):
+        if self.task == 2:
+            x = x / 255.0  # Normalize pixel values for Pong
         return self.network(x)
 
 
@@ -115,6 +131,9 @@ class PrioritizedReplayBuffer:
 class DQNAgent:
     def __init__(self, env_name="CartPole-v1", args=None):
         self.task = args.task
+        self.pong = (self.task in [2, 3])
+        self.terminal_output = args.terminal_output
+        
         self.env = gym.make(env_name, render_mode="rgb_array")
         self.test_env = gym.make(env_name, render_mode="rgb_array")
         self.num_actions = self.env.action_space.n
@@ -124,9 +143,9 @@ class DQNAgent:
         print("Using device:", self.device)
 
         input_dim = 4
-        self.q_net = DQN(self.num_actions, input_dim).to(self.device)
+        self.q_net = DQN(self.num_actions, input_dim, task=self.task).to(self.device)
         self.q_net.apply(init_weights)
-        self.target_net = DQN(self.num_actions, input_dim).to(self.device)
+        self.target_net = DQN(self.num_actions, input_dim, task=self.task).to(self.device)
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=args.lr)
 
@@ -196,7 +215,8 @@ class DQNAgent:
                     # Add additional wandb logs for debugging if needed 
                     
                     ########## END OF YOUR CODE ##########   
-            print(f"[Eval] Ep: {ep} Total Reward: {total_reward} SC: {self.env_count} UC: {self.train_count} Eps: {self.epsilon:.4f}")
+            if self.terminal_output:
+                print(f"[Eval] Ep: {ep} Total Reward: {total_reward} SC: {self.env_count} UC: {self.train_count} Eps: {self.epsilon:.4f}")
             wandb.log({
                 "Episode": ep,
                 "Total Reward": total_reward,
@@ -302,6 +322,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=int, default=1, choices=[1, 2, 3], help="Choose Task (1: CartPole, 2: Pong, 3: Enhanced Pong)")
     parser.add_argument("--episodes", type=int, default=1000)
+    parser.add_argument("--terminal-output", action="store_true", help="Whether to print the logs in the terminal", default=False)
     
     parser.add_argument("--save-dir", type=str, default="./results")
     parser.add_argument("--wandb-run-name", type=str, default="cartpole-run")
@@ -320,6 +341,7 @@ if __name__ == "__main__":
 
     wandb.login(key="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")
     env_name = "CartPole-v1" if args.task == 1 else "ALE/Pong-v5"
-    wandb.init(project="NYCU_DL_lab5", name=args.wandb_run_name, save_code=True)
+    wandb.init(project="NYCU_DL_lab5", name=args.wandb_run_name, group=f"task_{args.task}", save_code=True)
     agent = DQNAgent(env_name=env_name, args=args)
     agent.run()
+    # python dqn.py --task 2 --wandb-run-name task2_v0 --episodes 3000 --memory-size 300000 --batch-size 64 --target-update-frequency 5000
