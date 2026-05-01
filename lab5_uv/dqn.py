@@ -113,17 +113,38 @@ class PrioritizedReplayBuffer:
 
     def add(self, transition, error):
         ########## YOUR CODE HERE (for Task 3) ########## 
-                    
+        max_p = np.max(self.priorities) if self.buffer else 1.0
+        priority = (abs(error) + 1e-5) ** self.alpha if error is not None else max_p
+        
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(transition)
+        else:
+            self.buffer[self.pos] = transition
+        
+        self.priorities[self.pos] = priority
+        self.pos = (self.pos + 1) % self.capacity
         ########## END OF YOUR CODE (for Task 3) ########## 
         return 
     def sample(self, batch_size):
         ########## YOUR CODE HERE (for Task 3) ########## 
-                    
+        current_size = len(self.buffer)
+        priorities = self.priorities[:current_size]
+        
+        probs = priorities / priorities.sum()
+        
+        indices = np.random.choice(current_size, batch_size, p=probs)
+        samples = [self.buffer[idx] for idx in indices]
+        
+        total = current_size
+        weights = (total * probs[indices]) ** (-self.beta)
+        weights /= weights.max()
+        return samples, indices, np.array(weights, dtype=np.float32)
         ########## END OF YOUR CODE (for Task 3) ########## 
         return
     def update_priorities(self, indices, errors):
         ########## YOUR CODE HERE (for Task 3) ########## 
-                    
+        for idx, error in zip(indices, errors):
+            self.priorities[idx] = (abs(error) + 1e-5) ** self.alpha
         ########## END OF YOUR CODE (for Task 3) ########## 
         return
         
@@ -165,8 +186,18 @@ class DQNAgent:
         self.save_dir = args.save_dir
         os.makedirs(self.save_dir, exist_ok=True)
         
-        self.memory = deque(maxlen=args.memory_size)
+        self.n_step = args.n_step
+        self.memory = PrioritizedReplayBuffer(capacity=args.memory_size, alpha=args.per_alpha, beta=args.per_beta)
+        self.n_step_buffer = deque(maxlen=self.n_step)
         self.episodes = args.episodes
+        
+        self.save_dir = args.save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        self.log_buffer = deque(maxlen=20) 
+        self.reached_19 = False
+        self.post_19_counter = -1
+        self.student_id = "411410010"
 
     def select_action(self, state):
         if random.random() < self.epsilon:
@@ -192,8 +223,17 @@ class DQNAgent:
                 done = terminated or truncated
                 
                 next_state = next_obs if self.task == 1 else self.preprocessor.step(next_obs)
-                self.memory.append((state, action, reward, next_state, done))
+                # self.memory.append((state, action, reward, next_state, done))
 
+                self.n_step_buffer.append((state, action, reward, next_state, done))
+                
+                if len(self.n_step_buffer) == self.n_step:
+                    n_step_reward = sum([t[2] * (self.gamma ** i) for i, t in enumerate(self.n_step_buffer)])
+                    n_step_state, n_step_action = self.n_step_buffer[0][0], self.n_step_buffer[0][1]
+                    n_step_next_state, n_step_done = self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
+
+                    self.memory.add((n_step_state, n_step_action, n_step_reward, n_step_next_state, n_step_done))
+                    
                 for _ in range(self.train_per_step):
                     self.train()
 
@@ -201,6 +241,12 @@ class DQNAgent:
                 total_reward += reward
                 self.env_count += 1
                 step_count += 1
+                
+                milestones = [600000, 1000000, 1500000, 2000000, 2500000]
+                if self.env_count in milestones:
+                    path = os.path.join(self.save_dir, f"LAB5_{self.student_id}_task3_{self.env_count}.pt")
+                    torch.save(self.q_net.state_dict(), path)
+                    print(f"\n [Milestone] achieve {self.env_count} steps, Model saved to: {path}\n")
 
                 if self.env_count % 1000 == 0:                 
                     print(f"[Collect] Ep: {ep} Step: {step_count} SC: {self.env_count} UC: {self.train_count} Eps: {self.epsilon:.4f}")
@@ -211,6 +257,8 @@ class DQNAgent:
                         "Update Count": self.train_count,
                         "Epsilon": self.epsilon
                     })
+                    
+            self.n_step_buffer.clear()
                     ########## YOUR CODE HERE  ##########
                     # Add additional wandb logs for debugging if needed 
                     
@@ -235,6 +283,29 @@ class DQNAgent:
 
             if ep % 20 == 0:
                 eval_reward = self.evaluate()
+                
+                log_str = f"[TrueEval] Ep: {ep} Eval Reward: {eval_reward:.2f} SC: {self.env_count} UC: {self.train_count}"
+                self.log_buffer.append(log_str)
+                
+                if eval_reward >= 19.0 and not self.reached_19:
+                    self.reached_19 = True
+                    hit_msg = f"\n reach score 19 (Env Steps: {self.env_count}) save at LAB5_{self.student_id}_task3_best.pt"
+                    self.log_buffer.append(hit_msg)
+                    print(hit_msg)
+                    
+                    torch.save(self.q_net.state_dict(), os.path.join(self.save_dir, f"LAB5_{self.student_id}_task3_best.pt"))
+                    
+                    self.post_19_counter = 2  
+
+                # 倒數計時器結束，寫入 txt 檔案
+                elif self.reached_19 and self.post_19_counter > 0:
+                    self.post_19_counter -= 1
+                    if self.post_19_counter == 0:
+                        txt_path = os.path.join(self.save_dir, "score19.txt")
+                        with open(txt_path, "w", encoding="utf-8") as f:
+                            f.write("\n".join(self.log_buffer))
+                        print(f"score 19 log added to {txt_path}\n")
+                
                 if eval_reward > self.best_reward:
                     self.best_reward = eval_reward
                     model_path = os.path.join(self.save_dir, "best_model.pt")
@@ -267,8 +338,10 @@ class DQNAgent:
 
     def train(self):
 
-        if len(self.memory) < self.replay_start_size:
-            return 
+        # if len(self.memory) < self.replay_start_size:
+        #     return         
+        if len(self.memory.buffer) < self.replay_start_size:
+            return
         
         # Decay function for epsilin-greedy exploration
         if self.epsilon > self.epsilon_min:
@@ -277,7 +350,8 @@ class DQNAgent:
        
         ########## YOUR CODE HERE (<5 lines) ##########
         # Sample a mini-batch of (s,a,r,s',done) from the replay buffer
-        batch = random.sample(self.memory, self.batch_size)
+        # batch = random.sample(self.memory, self.batch_size)
+        batch, indices, weights = self.memory.sample(self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
       
             
@@ -290,15 +364,27 @@ class DQNAgent:
         actions = torch.tensor(actions, dtype=torch.int64).to(self.device)
         rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         dones = torch.tensor(dones, dtype=torch.float32).to(self.device)
+        weights = torch.tensor(weights, dtype=torch.float32).to(self.device)
+
         q_values = self.q_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
         ########## YOUR CODE HERE (~10 lines) ##########
         # Implement the loss function of DQN and the gradient updates 
         with torch.no_grad():
-            max_next_q_values = self.target_net(next_states).max(1)[0]
-            target_q_values = rewards + self.gamma * max_next_q_values * (1 - dones)
+            # max_next_q_values = self.target_net(next_states).max(1)[0]
+            # target_q_values = rewards + self.gamma * max_next_q_values * (1 - dones)
+            next_actions = self.q_net(next_states).argmax(1).unsqueeze(1)
+            next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
             
-        loss = nn.MSELoss()(q_values, target_q_values)
+            gamma_n = self.gamma ** self.n_step
+            target_q_values = rewards + gamma_n * next_q_values * (1 - dones)
+          
+        td_errors = (target_q_values - q_values).abs().cpu().detach().numpy()
+        self.memory.update_priorities(indices, td_errors)
+            
+        # loss = nn.MSELoss()(q_values, target_q_values)
+        loss = (weights * nn.MSELoss(reduction='none')(q_values, target_q_values)).mean()
+        
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -322,7 +408,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=int, default=1, choices=[1, 2, 3], help="Choose Task (1: CartPole, 2: Pong, 3: Enhanced Pong)")
     parser.add_argument("--episodes", type=int, default=1000)
-    parser.add_argument("--terminal-output", action="store_true", help="Whether to print the logs in the terminal", default=False)
+    parser.add_argument("--terminal-output", action="store_true", help="Whether to print the logs in the terminal", default=True)
+    parser.add_argument("--n-step", type=int, default=3, help="N-step return")
+    parser.add_argument("--per-alpha", type=float, default=0.6, help="PER alpha parameter")
+    parser.add_argument("--per-beta", type=float, default=0.4, help="PER beta parameter")
     
     parser.add_argument("--save-dir", type=str, default="./results")
     parser.add_argument("--wandb-run-name", type=str, default="cartpole-run")
@@ -345,3 +434,4 @@ if __name__ == "__main__":
     agent = DQNAgent(env_name=env_name, args=args)
     agent.run()
     # python dqn.py --task 2 --wandb-run-name task2_v0 --episodes 3000 --memory-size 300000 --batch-size 64 --target-update-frequency 5000
+    # python dqn.py --task 2 --wandb-run-name task2_orginparm --episodes 3000
