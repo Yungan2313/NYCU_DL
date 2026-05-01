@@ -45,7 +45,7 @@ class DQN(nn.Module):
         #)       
         ########## YOUR CODE HERE (5~10 lines) ##########
         self.task = task
-        if task == 2:
+        if task == 2 or task == 3:
             self.network = nn.Sequential(
                 nn.Conv2d(in_channels=input_dim, out_channels=32, kernel_size=8, stride=4),
                 nn.ReLU(),
@@ -69,7 +69,7 @@ class DQN(nn.Module):
         ########## END OF YOUR CODE ##########
 
     def forward(self, x):
-        if self.task == 2:
+        if self.task == 2 or self.task == 3:
             x = x / 255.0  # Normalize pixel values for Pong
         return self.network(x)
 
@@ -111,7 +111,7 @@ class PrioritizedReplayBuffer:
         self.priorities = np.zeros((capacity,), dtype=np.float32)
         self.pos = 0
 
-    def add(self, transition, error):
+    def add(self, transition, error=None):
         ########## YOUR CODE HERE (for Task 3) ########## 
         max_p = np.max(self.priorities) if self.buffer else 1.0
         priority = (abs(error) + 1e-5) ** self.alpha if error is not None else max_p
@@ -435,3 +435,4 @@ if __name__ == "__main__":
     agent.run()
     # python dqn.py --task 2 --wandb-run-name task2_v0 --episodes 3000 --memory-size 300000 --batch-size 64 --target-update-frequency 5000
     # python dqn.py --task 2 --wandb-run-name task2_orginparm --episodes 3000
+    # python dqn.py --task 3 --wandb-run-name task3_v0_enhance111 --episodes 3000 --n-step 3 --per-alpha 0.6 --per-beta 0.4
