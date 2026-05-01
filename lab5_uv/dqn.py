@@ -257,7 +257,16 @@ class DQNAgent:
                         "Update Count": self.train_count,
                         "Epsilon": self.epsilon
                     })
-                    
+            buffer_list = list(self.n_step_buffer)
+            start_idx = 1 if len(buffer_list) == self.n_step else 0
+            
+            for i in range(start_idx, len(buffer_list)):
+                sub_buffer = buffer_list[i:]
+                n_step_reward = sum([t[2] * (self.gamma ** j) for j, t in enumerate(sub_buffer)])
+                n_step_state, n_step_action = sub_buffer[0][0], sub_buffer[0][1]
+                n_step_next_state, n_step_done = sub_buffer[-1][3], sub_buffer[-1][4]
+                self.memory.add((n_step_state, n_step_action, n_step_reward, n_step_next_state, n_step_done))
+            
             self.n_step_buffer.clear()
                     ########## YOUR CODE HERE  ##########
                     # Add additional wandb logs for debugging if needed 
