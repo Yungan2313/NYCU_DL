@@ -125,7 +125,7 @@ class PrioritizedReplayBuffer:
         self.pos = (self.pos + 1) % self.capacity
         ########## END OF YOUR CODE (for Task 3) ########## 
         return 
-    def sample(self, batch_size):
+    def sample(self, batch_size, beta=0.4):
         ########## YOUR CODE HERE (for Task 3) ########## 
         current_size = len(self.buffer)
         priorities = self.priorities[:current_size]
@@ -136,7 +136,7 @@ class PrioritizedReplayBuffer:
         samples = [self.buffer[idx] for idx in indices]
         
         total = current_size
-        weights = (total * probs[indices]) ** (-self.beta)
+        weights = (total * probs[indices]) ** (-beta)
         weights /= weights.max()
         return samples, indices, np.array(weights, dtype=np.float32)
         ########## END OF YOUR CODE (for Task 3) ########## 
@@ -190,6 +190,8 @@ class DQNAgent:
         self.memory = PrioritizedReplayBuffer(capacity=args.memory_size, alpha=args.per_alpha, beta=args.per_beta)
         self.n_step_buffer = deque(maxlen=self.n_step)
         self.episodes = args.episodes
+        self.per_beta_start = args.per_beta
+        self.per_beta_frames = 2500000
         
         self.save_dir = args.save_dir
         os.makedirs(self.save_dir, exist_ok=True)
@@ -198,6 +200,7 @@ class DQNAgent:
         self.reached_19 = False
         self.post_19_counter = -1
         self.student_id = "411410010"
+        
 
     def select_action(self, state):
         if random.random() < self.epsilon:
@@ -228,10 +231,22 @@ class DQNAgent:
                 self.n_step_buffer.append((state, action, reward, next_state, done))
                 
                 if len(self.n_step_buffer) == self.n_step:
-                    n_step_reward = sum([t[2] * (self.gamma ** i) for i, t in enumerate(self.n_step_buffer)])
-                    n_step_state, n_step_action = self.n_step_buffer[0][0], self.n_step_buffer[0][1]
-                    n_step_next_state, n_step_done = self.n_step_buffer[-1][3], self.n_step_buffer[-1][4]
-
+                    n_step_reward = 0
+                    n_step_done = False
+                    n_step_next_state = self.n_step_buffer[-1][3]
+                    
+                    for i, t in enumerate(self.n_step_buffer):
+                        _state, _action, _reward, _next_state, _done = t
+                        n_step_reward += _reward * (self.gamma ** i)
+                        if _done:
+                            # 如果中間遇到 done，立刻截斷，並記錄真正的終點狀態
+                            n_step_done = True
+                            n_step_next_state = _next_state
+                            break
+                    
+                    n_step_state = self.n_step_buffer[0][0]
+                    n_step_action = self.n_step_buffer[0][1]
+                    
                     self.memory.add((n_step_state, n_step_action, n_step_reward, n_step_next_state, n_step_done))
                     
                 for _ in range(self.train_per_step):
@@ -262,9 +277,19 @@ class DQNAgent:
             
             for i in range(start_idx, len(buffer_list)):
                 sub_buffer = buffer_list[i:]
-                n_step_reward = sum([t[2] * (self.gamma ** j) for j, t in enumerate(sub_buffer)])
+                n_step_reward = 0
+                n_step_done = False
+                n_step_next_state = sub_buffer[-1][3]
+                
+                for j, t in enumerate(sub_buffer):
+                    _s, _a, _r, _ns, _d = t
+                    n_step_reward += _r * (self.gamma ** j)
+                    if _d:
+                        n_step_done = True
+                        n_step_next_state = _ns
+                        break
+                        
                 n_step_state, n_step_action = sub_buffer[0][0], sub_buffer[0][1]
-                n_step_next_state, n_step_done = sub_buffer[-1][3], sub_buffer[-1][4]
                 self.memory.add((n_step_state, n_step_action, n_step_reward, n_step_next_state, n_step_done))
             
             self.n_step_buffer.clear()
@@ -352,6 +377,9 @@ class DQNAgent:
         if len(self.memory.buffer) < self.replay_start_size:
             return
         
+        fraction = min(1.0, float(self.train_count) / self.per_beta_frames)
+        current_beta = self.per_beta_start + fraction * (1.0 - self.per_beta_start)
+        
         # Decay function for epsilin-greedy exploration
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
@@ -360,7 +388,7 @@ class DQNAgent:
         ########## YOUR CODE HERE (<5 lines) ##########
         # Sample a mini-batch of (s,a,r,s',done) from the replay buffer
         # batch = random.sample(self.memory, self.batch_size)
-        batch, indices, weights = self.memory.sample(self.batch_size)
+        batch, indices, weights = self.memory.sample(self.batch_size, beta=current_beta)
         states, actions, rewards, next_states, dones = zip(*batch)
       
             
@@ -392,7 +420,8 @@ class DQNAgent:
         self.memory.update_priorities(indices, td_errors)
             
         # loss = nn.MSELoss()(q_values, target_q_values)
-        loss = (weights * nn.MSELoss(reduction='none')(q_values, target_q_values)).mean()
+        # loss = (weights * nn.MSELoss(reduction='none')(q_values, target_q_values)).mean()
+        loss = (weights * nn.SmoothL1Loss(reduction='none')(q_values, target_q_values)).mean()
         
         self.optimizer.zero_grad()
         loss.backward()
