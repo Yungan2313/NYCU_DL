@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
+from torchvision import transforms
+import sys
 from torchvision.utils import make_grid
 from diffusers import DDPMScheduler, UNet2DConditionModel
 from diffusers.optimization import get_cosine_schedule_with_warmup
@@ -11,6 +13,9 @@ import wandb
 from tqdm import tqdm
 from dataloader import ICLEVRDataset 
 from model import ConditionalDDPM
+from file.evaluator import evaluation_model
+
+sys.path.append('./file')
 
 def parse_args():
     parser = argparse.ArgumentParser(description="訓練 Conditional DDPM 模型")
@@ -92,7 +97,16 @@ def train(args):
     noise_scheduler = DDPMScheduler(num_train_timesteps=1000, beta_schedule=args.beta_schedule)
     lr_scheduler = get_cosine_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=args.epochs * len(train_loader))
     scaler = torch.amp.GradScaler('cuda')
-
+    
+    # 3.5 新增：初始化 Evaluator 實例
+    evaluator = evaluation_model()
+    # 準備 test.json 和 new_test.json 的 DataLoader
+    test_ds = ICLEVRDataset(args.root_dir, './file/test.json', args.objects_json, mode='test')
+    new_test_ds = ICLEVRDataset(args.root_dir, './file/new_test.json', args.objects_json, mode='test')
+    
+    test_loader = DataLoader(test_ds, batch_size=32, shuffle=False)
+    new_test_loader = DataLoader(new_test_ds, batch_size=32, shuffle=False)
+    
     # 4. 訓練迴圈
     for epoch in range(args.epochs):
         model.train()
@@ -141,6 +155,25 @@ def train(args):
         avg_val_loss = val_loss / len(val_loader)
         wandb.log({"epoch": epoch + 1, "epoch_train_loss": avg_train_loss, "epoch_val_loss": avg_val_loss})
 
+        if (epoch + 1) % 10 == 0:
+            print(f"\n--- Epoch {epoch+1} : Evaluator test ---")
+            
+            # 測試 test.json
+            acc_test = evaluate_generation(model, noise_scheduler, test_loader, evaluator, device)
+            print(f"Test Accuracy: {acc_test:.4f}")
+            
+            # 測試 new_test.json
+            acc_new_test = evaluate_generation(model, noise_scheduler, new_test_loader, evaluator, device)
+            print(f"New Test Accuracy: {acc_new_test:.4f}")
+            
+            # 紀錄到 WandB
+            wandb.log({
+                "epoch": epoch + 1,
+                "Accuracy/test": acc_test,
+                "Accuracy/new_test": acc_new_test
+            })
+            
+        
         # --- 新增：視覺化圖片並上傳到 WandB ---
         if (epoch + 1) % args.log_image_interval == 0:
             print(f"Generating images for epoch {epoch+1}...")
@@ -160,7 +193,44 @@ def train(args):
 
     wandb.finish()
 
+def evaluate_generation(model, noise_scheduler, test_loader, evaluator, device):
+    """
+    使用模型生成圖片，並丟入 Evaluator 計算準確率
+    """
+    model.eval()
+    
+    # 準備 Evaluator 專用的標準化轉換
+    # 將 [0, 1] 的影像轉換為 [-1, 1]
+    eval_transform = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    
+    total_acc = 0.0
+    total_batches = 0
+    
+    with torch.no_grad():
+        # 通常 test_loader 只有一個 Batch (包含 test.json 的 32 張)
+        for conditions in test_loader:
+            conditions = conditions.to(device)
+            
+            # 1. 呼叫之前的生成函數 (回傳的是 [0, 1] 的影像張量)
+            generated_images_0_to_1 = sample_pure_conditional(model, noise_scheduler, conditions, device)
+            
+            # 2. 為 Evaluator 進行標準化 (轉回 [-1, 1])
+            eval_images = eval_transform(generated_images_0_to_1)
+            
+            # 3. 丟入 Evaluator 計算準確率
+            # 注意：evaluator 預期的是 normalized images 和 multi-hot labels
+            acc = evaluator.eval(eval_images, conditions)
+            
+            total_acc += acc
+            total_batches += 1
+            
+    avg_acc = total_acc / total_batches
+    return avg_acc
 
 if __name__ == "__main__":
     args = parse_args()
     train(args)
+    
+    
+    # uv run train.py --epochs 5 --batch_size 16 --wandb_name "H200_Quick_Test"
+    # uv run train.py --epochs 150 --batch_size 64 --lr 2e-4 --wandb_name "v0-150epoch" --save_interval 20 --log_image_interval 20
