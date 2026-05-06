@@ -113,7 +113,7 @@ def main():
     evaluator = evaluation_model()
     
     # --- 2. 準備測試資料集 ---
-    root_dir = './ickevr'
+    root_dir = './iclevr'
     objects_json = './file/objects.json'
     test_ds = ICLEVRDataset(root_dir, './file/test.json', objects_json, mode='test')
     new_test_ds = ICLEVRDataset(root_dir, './file/new_test.json', objects_json, mode='test')
@@ -138,3 +138,6 @@ def main():
     # --- 4. 生成作業指定的去噪過程圖 ---
     target_labels = ["red sphere", "cyan cylinder", "cyan cube"]
     denoising_save_path = os.path.join
+
+if __name__ == "__main__":
+    main()

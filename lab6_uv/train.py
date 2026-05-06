@@ -27,6 +27,7 @@ def parse_args():
     parser.add_argument("--save_interval", type=int, default=10, help="每隔幾個 epoch 儲存一次模型")
     parser.add_argument("--log_image_interval", type=int, default=5, help="每隔幾個 epoch 紀錄一次生成圖片")
     parser.add_argument("--output_dir", type=str, default="./checkpoints", help="模型權重儲存路徑")
+    parser.add_argument("--eval_interval", type=int, default=10, help="每隔幾個 epoch 用 evaluator 算一次準確率")
     
     # 資料路徑參數
     parser.add_argument("--root_dir", type=str, default="./iclevr", help="圖片根目錄")
@@ -71,7 +72,9 @@ def sample_pure_conditional(model, noise_scheduler, conditions, device):
     
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.makedirs(args.output_dir, exist_ok=True)
+    
+    run_output_dir = os.path.join(args.output_dir, args.wandb_name)
+    os.makedirs(run_output_dir, exist_ok=True)
 
     # 1. 初始化 WandB
     wandb.login(key="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")
@@ -108,6 +111,7 @@ def train(args):
     new_test_loader = DataLoader(new_test_ds, batch_size=32, shuffle=False)
     
     # 4. 訓練迴圈
+    best_test_acc = 0.0
     for epoch in range(args.epochs):
         model.train()
         train_loss = 0.0
@@ -187,9 +191,27 @@ def train(args):
             wandb.log({"Test_Generation_Progress": wandb.Image(grid, caption=f"Epoch {epoch+1} Test.json Results")})
 
         # 6. 儲存模型
-        if (epoch + 1) % args.save_interval == 0:
-            save_path = os.path.join(args.output_dir, f"model_epoch_{epoch+1}.pth")
+        if (epoch + 1) % args.eval_interval == 0 or (epoch + 1) == args.epochs:
+            print(f"\n--- Epoch {epoch+1} : 執行 Evaluator 測試 ---")
+            
+            # 呼叫你的 evaluate_generation 函數計算 test.json 的準確率
+            # (注意：這裡的 evaluate_generation 是我們前面對話中寫的獨立函數)
+            acc_test = evaluate_generation(model, noise_scheduler, test_loader, evaluator, device)
+            
+            wandb.log({"epoch": epoch + 1, "Accuracy/test": acc_test})
+            print(f"目前 Test Accuracy: {acc_test:.4f}")
+
+            # 🌟 判斷是否為最佳模型並儲存 🌟
+            if acc_test > best_test_acc:
+                best_test_acc = acc_test
+                best_model_path = os.path.join(run_output_dir, "best_model.pth")
+                torch.save(model.state_dict(), best_model_path)
+                print(f"new best! best model store in {best_model_path} (Acc: {best_test_acc:.4f})")
+        
+        if (epoch + 1) % args.save_interval == 0 or (epoch + 1) == args.epochs:
+            save_path = os.path.join(run_output_dir, f"model_epoch_{epoch+1}.pth")
             torch.save(model.state_dict(), save_path)
+            print(f" Checkpoint saved to {save_path}")
 
     wandb.finish()
 
@@ -234,3 +256,6 @@ if __name__ == "__main__":
     
     # uv run train.py --epochs 5 --batch_size 16 --wandb_name "H200_Quick_Test"
     # uv run train.py --epochs 150 --batch_size 64 --lr 2e-4 --wandb_name "v0-150epoch" --save_interval 20 --log_image_interval 20
+    # uv run train.py --epochs 150 --batch_size 64 --lr 2e-4 --wandb_name "v0-150epoch-linear" --save_interval 10 --log_image_interval 20 --beta_schedule linear
+    
+    # uv run hf upload yuminyu/NCYU_DL_lab6 ./results/images/ /generated_images/

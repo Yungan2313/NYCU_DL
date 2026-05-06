@@ -2,3 +2,4 @@ checkpoints/
 wandb/
 iclevr/
 __pycache__/
+test_images/
